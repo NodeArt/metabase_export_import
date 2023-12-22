@@ -23,6 +23,7 @@ class MetabaseApi:
         self.metrics_export = None
         self.dashboards_export = None
         self.dashboards_name2id = None
+        self.database_cache = None
         self.cards_name2id = {}
         self.snippets_name2id = {}
         self.collections_name2id = {}
@@ -355,7 +356,9 @@ class MetabaseApi:
     def database_name2id(self, database_name):
         # TODO: Optimize with cache
         self.create_session_if_needed()
-        data = self.query('GET', 'database')
+        if self.database_cache is None:
+            self.database_cache = self.query('GET', 'database')
+        data = self.database_cache
         if isinstance(data, list):
             newdata = {}
             newdata['data'] = data
@@ -383,18 +386,22 @@ class MetabaseApi:
 
     def get_dashboards(self, database_name):
         database_id = self.database_name2id(database_name)
-        dashbords_light = self.query('GET', 'dashboard')
         dashboards = []
-        for d in dashbords_light:
-            res = self.query('GET', 'dashboard/' + str(d['id']))
-            good_db = True
-            for c in res['ordered_cards']:
-                if c['card'].get('database_id') and c['card'].get('database_id') != database_id:
-                    good_db = False
+        # `GET /api/dashboard` was deprecated, the recommended way to do it is
+        # to get a list of collections and iterate over their items(with `models`
+        # filter being `dashboard`), though this is a much slower approach.
+        for c in self.get_collections():
+            collection_items = self.query('GET', 'collection/'+str(c['id'])+'/items?models=dashboard')
+            for d in collection_items['data']:
+                res = self.query('GET', 'dashboard/' + str(d['id']))
+                good_db = True
+                for c in res['dashcards']:
+                    if c['card'].get('database_id') and c['card'].get('database_id') != database_id:
+                        good_db = False
+                        continue
+                if not good_db:
                     continue
-            if not good_db:
-                continue
-            dashboards.append(res)
+                dashboards.append(res)
         return dashboards
 
     def get_metrics(self, database_name):
@@ -636,8 +643,8 @@ class MetabaseApi:
     def export_dashboards_to_json(self, database_name, dirname, raw: bool = False):
         export = self.get_dashboards(database_name)
         for dash in export:
-            if len(dash['ordered_cards']):
-                dash = self.clean_object(dash)
+            if len(dash['dashcards']):
+                dash = self.clean_object_dash(dash)
                 with open(dirname + "/dashboard_" + dash['name'].replace('/', '') + ".json", 'w',
                           newline='') as jsonfile:
                     if not raw:
@@ -659,11 +666,46 @@ class MetabaseApi:
             for i in range(0, len(object['result_metadata'])):
                 if 'fingerprint' in object['result_metadata'][i]:
                     del object['result_metadata'][i]['fingerprint']
-        if 'ordered_cards' in object:
-            for c in object['ordered_cards']:
+        if 'dashcards' in object:
+            for c in object['dashcards']:
                 c = self.clean_object(c)
         if 'card' in object:
             object['card'] = self.clean_object(object['card'])
+        if 'query_average_duration' in object:
+            del object['query_average_duration']
+        if 'creator_id' in object:
+            del object['creator_id']
+        if 'made_public_by_id' in object:
+            del object['made_public_by_id']
+        if 'param_values' in object:
+            del object['param_values']
+        if 'public_uuid' in object:
+            del object['public_uuid']
+        return object
+
+    def clean_object_dash(self, object):
+        if 'updated_at' in object:
+            del object['updated_at']
+        if 'created_at' in object:
+            del object['created_at']
+        if 'entity_id' in object:
+            del object['entity_id']
+        if 'creator' in object:
+            del object['creator']
+        if 'last-edit-info' in object:
+            del object['last-edit-info']
+        if 'result_metadata' in object and object['result_metadata']:
+            for i in range(0, len(object['result_metadata'])):
+                if 'fingerprint' in object['result_metadata'][i]:
+                    del object['result_metadata'][i]['fingerprint']
+        if 'dashcards' in object:
+            for c in object['dashcards']:
+                c = self.clean_object_dash(c)
+        if 'tabs' in object:
+            for c in object['tabs']:
+                c = self.clean_object_dash(c)
+        if 'card' in object:
+            object['card'] = self.clean_object_dash(object['card'])
         if 'query_average_duration' in object:
             del object['query_average_duration']
         if 'creator_id' in object:
@@ -746,11 +788,11 @@ class MetabaseApi:
 
         with Progress() as progress:
             task = progress.add_task(f"[cyan]Deleting cards from dashboard {dash['name']}...",
-                                     total=len(dash['ordered_cards']))
+                                     total=len(dash['dashcards']))
 
             with ThreadPoolExecutor() as executor:
-                # Submit delete_card function for each card in dash['ordered_cards']
-                futures = [executor.submit(delete_card, card) for card in dash['ordered_cards']]
+                # Submit delete_card function for each card in dash['dashcards']
+                futures = [executor.submit(delete_card, card) for card in dash['dashcards']]
 
                 # Collect the results as tasks complete
                 for future in as_completed(futures):
@@ -791,7 +833,7 @@ class MetabaseApi:
         res = []
         cards = self.get_json_data('card_', dirname)
         for dash in self.get_json_data('dashboard_', dirname)[:1]:
-            for embed_card in dash['ordered_cards'][:1]:
+            for embed_card in dash['dashcards'][:1]:
                 if embed_card and embed_card['card']:
                     cards.append(embed_card['card'])
         if len(cards):
@@ -864,16 +906,13 @@ class MetabaseApi:
         if len(jsondata):
             jsondata = self.convert_names2ids(database_name, collection_name, jsondata)
             for dash in jsondata:
+                # Quick fix for updating cards when dashboard was just created
+                # is to just update created dashboard with cards since
+                # `PUT /api/dashboard/:id/cards` was deprecated.
+                # Better way to do it is to use `PUT /api/dashboard/:id` with
+                # only cards.
+                self.dashboard_import(database_name, dash)
                 res[0].append(self.dashboard_import(database_name, dash))
-                self.dashboard_delete_all_cards(database_name, dash['name'])
-
-                with Progress() as progress:
-                    task = progress.add_task(f"[cyan]Adding cards to dashboard {dash['name']}...",
-                                             total=len(dash['ordered_cards']))
-
-                    for ocard in dash['ordered_cards']:
-                        res[1].append(self.dashboard_import_card(database_name, dash['name'], ocard))
-                        progress.update(task, advance=1)
         return res
 
     def get_users(self):
