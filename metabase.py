@@ -195,7 +195,7 @@ class MetabaseApi:
         for table in self.database_export['tables']:
             for field in table['fields']:
                 if field['id'] == field_id:
-                    return [table['name'], field['name']]
+                    return [table['schema'] + '.' + table['name'], field['name']]
         return ['', '']
 
     def table_id2name(self, database_name, table_id):
@@ -239,8 +239,9 @@ class MetabaseApi:
             return None
         if not self.database_export.get('tables'):
             return None
+        table_name_split = table_name.split('.')
         for table in self.database_export['tables']:
-            if table['name'] == table_name:
+            if table['name'] == table_name_split[1] and table['schema'] == table_name_split[0]:
                 for field in table['fields']:
                     if field['name'] == field_name:
                         return field
@@ -264,6 +265,7 @@ class MetabaseApi:
         if not self.database_export.get('tables'):
             return None
         for table in self.database_export['tables']:
+            schema_name = table['schema']
             table_name = table['name']
             for field in table['fields']:
                 field_id = field['fk_target_field_id']
@@ -273,7 +275,7 @@ class MetabaseApi:
                 if not field['custom_position']:
                     field['custom_position'] = ''
                 result.append({
-                    'table_name': table_name, 'field_name': field['name'],
+                    'table_name': schema_name + '.' + table_name, 'field_name': field['name'],
                     'description': field['description'],
                     'semantic_type': field['semantic_type'],
                     'foreign_table': fk_table, 'foreign_field': fk_field,
