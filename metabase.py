@@ -610,7 +610,7 @@ class MetabaseApi:
                                 if id[0:6] == 'card__':
                                     c = self.card_id2name(database_name, int(id[6:]))
                                     obj_res['pseudo_table_card_name'] = '%' + k + '%' + c
-                    elif k in ['card_id', 'targetId']:
+                    elif k in ['card_id', 'targetId'] or (k == 'id' and previous_key in ['series']):
                         id = obj_res.pop(k)
                         if id:
                             n = self.card_id2name(database_name, int(id))
